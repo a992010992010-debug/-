@@ -1,115 +1,166 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { LessonSummaryResponse } from "../types";
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-
-// Existing function for enhancement (optional usage)
-export const enhanceStudyMaterial = async (summary: string): Promise<string> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `حسن هذا النص العربي ليكون أكثر وضوحاً: ${summary}`,
-    });
-    return response.text || summary;
-  } catch (error) {
-    return summary;
+// Helper to clean JSON string
+const cleanJsonString = (text: string): string => {
+  let clean = text.trim();
+  // Remove markdown code blocks
+  clean = clean.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+  
+  // Try to extract JSON object if wrapped in text
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    clean = clean.substring(firstBrace, lastBrace + 1);
   }
+  
+  return clean;
 };
 
-// New function for the "Summarize with AI" page returning structured JSON
 export const generateLessonSummary = async (
   lessonName: string, 
   subject: string, 
   gradeLevel: string,
   length: 'short' | 'medium' | 'long' = 'medium',
-  conceptsCount: number = 3
+  conceptsCount: number = 3,
+  includeGlossary: boolean = true,
+  imageBase64?: string
 ): Promise<LessonSummaryResponse | null> => {
-  try {
-    // Define explicit word counts to prevent the model from generating excessive text that gets truncated
-    let lengthDesc = "متوسط الطول (حوالي 300 كلمة)";
-    if (length === 'short') lengthDesc = "موجز جداً ومختصر (حوالي 150 كلمة)";
-    if (length === 'long') lengthDesc = "مفصل وشامل ولكن بحدود معقولة (حوالي 600 كلمة)";
+  // Initialize Gemini Client inside the function to ensure fresh state for every request
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
-    const prompt = `
-      أنت معلم خبير في كافة المواد الدراسية (علوم، رياضيات، تاريخ، لغات، إلخ). 
-      قم بتلخيص الدرس التالي: "${lessonName}" في مادة "${subject}" للصف "${gradeLevel}".
-      
-      إعدادات التلخيص المطلوبة بدقة:
-      - مستوى التفصيل والشرح: ${lengthDesc}. تجنب الإطالة المفرطة لتجنب انقطاع النص.
-      - عدد المفاهيم الرئيسية في قائمة keyConcepts: يجب أن يكون ${conceptsCount} مفاهيم بالضبط.
-      - إذا كانت المادة لغة أجنبية، اشرح القواعد بالعربية مع استخدام أمثلة باللغة الأجنبية.
-      - إذا كانت رياضيات أو علوم، ركز على القوانين والمعادلات والنظريات.
+  let attempt = 0;
+  const maxRetries = 2;
 
-      يجب أن يكون الرد بتنسيق JSON حصراً ويحتوي على الحقول التالية:
-      1. title: عنوان جذاب للتلخيص.
-      2. introduction: مقدمة تشرح الفكرة العامة للدرس.
-      3. keyConcepts: قائمة تحتوي على أهم ${conceptsCount} مفاهيم رئيسية. كل عنصر يجب أن يحتوي على "concept" (اسم المفهوم) و "explanation" (شرح للمفهوم).
-      4. terminology: قائمة بأهم المصطلحات وتعريفاتها.
-      5. studyTips: 3 نصائح سريعة للمذاكرة.
+  let lengthDesc = "متوسط الطول (حوالي 300 كلمة)";
+  if (length === 'short') lengthDesc = "موجز جداً ومختصر (حوالي 150 كلمة)";
+  if (length === 'long') lengthDesc = "مفصل وشامل (حوالي 600 كلمة)";
 
-      تأكد أن لا ينقطع النص في منتصف جملة JSON.
-    `;
+  const glossaryInstruction = includeGlossary 
+    ? "- terminology: (مصفوفة) تحتوي على كائنات { 'term': 'المصطلح', 'definition': 'التعريف' } لأهم 5 مصطلحات صعبة في الدرس."
+    : "- terminology: (مصفوفة) أعدها فارغة تماماً [].";
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingBudget: 0 }, // Optimized for speed
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            introduction: { type: Type.STRING },
-            keyConcepts: { 
-              type: Type.ARRAY,
-              items: { 
-                type: Type.OBJECT,
-                properties: {
-                  concept: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
+  const promptText = `
+    أنت معلم خبير وموسوعة شاملة في كافة المواد الدراسية (علوم، رياضيات، فيزياء، تاريخ، لغات، برمجة، إلخ).
+    
+    المهمة: قم بتلخيص وشرح درس بناءً على ${imageBase64 ? "الصورة المرفقة وبيانات الدرس" : "عنوان الدرس"}.
+    
+    بيانات الدرس:
+    - العنوان/الموضوع: "${lessonName}"
+    - المادة: "${subject}"
+    - الصف: "${gradeLevel}"
+    ${imageBase64 ? "- ملاحظة: استخرج المحتوى الأساسي من الصورة المرفقة واشرحه، واستخدم العنوان والمادة كسياق مساعد." : ""}
+    
+    تعليمات صارمة:
+    1. مستوى التفصيل: ${lengthDesc}.
+    2. المفاهيم الرئيسية: استخرج بالضبط ${conceptsCount} مفاهيم جوهرية.
+    3. أسلوب الشرح للمفاهيم الرئيسية (Key Concepts):
+       - يجب أن يكون الشرح مفصلاً وواضحاً.
+       - **هام جداً:** يجب تضمين "مثال عملي" أو "مثال توضيحي" لكل مفهوم.
+       - استخدم تنسيق Markdown داخل حقل "explanation":
+         * استخدم **خط عريض** للكلمات المهمة.
+         * استخدم القوائم النقطية لتجزئة الفقرات الطويلة.
+         * ابدأ المثال بـ: \n> **مثال:** لتمييزه بوضوح.
+       
+    4. التعامل مع المواد المختلفة:
+       - إذا كانت المادة علمية (رياضيات/فيزياء): اكتب المعادلات والقوانين بوضوح واشرح خطوات الحل في المثال.
+       - إذا كانت لغة أجنبية: اشرح القواعد بالعربية مع أمثلة باللغة الأجنبية وترجمتها.
+       
+    5. إذا لم تجد معلومات دقيقة عن الدرس (أو كانت الصورة غير واضحة)، قدم شرحاً عاماً للمصطلحات المذكورة في العنوان بدلاً من التوقف.
+
+    يجب أن يكون الرد بتنسيق JSON حصراً ويحتوي على الحقول التالية:
+    - title: (نص) عنوان جذاب للدرس.
+    - introduction: (نص) مقدمة وشرح عام.
+    - keyConcepts: (مصفوفة) تحتوي على كائنات { "concept": "الاسم", "explanation": "الشرح المفصل + المثال (Markdown)" }.
+    ${glossaryInstruction}
+    - studyTips: (مصفوفة نصوص) 3 نصائح للمذاكرة.
+  `;
+
+  const parts: any[] = [{ text: promptText }];
+  
+  if (imageBase64) {
+    const cleanBase64 = imageBase64.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
+    parts.push({
+      inlineData: {
+        mimeType: "image/jpeg",
+        data: cleanBase64
+      }
+    });
+  }
+
+  while (attempt <= maxRetries) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: { parts },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              introduction: { type: Type.STRING },
+              keyConcepts: { 
+                type: Type.ARRAY,
+                items: { 
+                  type: Type.OBJECT,
+                  properties: {
+                    concept: { type: Type.STRING },
+                    explanation: { type: Type.STRING }
+                  }
                 }
-              }
-            },
-            terminology: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  term: { type: Type.STRING },
-                  definition: { type: Type.STRING }
+              },
+              terminology: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    term: { type: Type.STRING },
+                    definition: { type: Type.STRING }
+                  }
                 }
+              },
+              studyTips: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
               }
-            },
-            studyTips: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
             }
           }
         }
+      });
+
+      if (response.text) {
+        const cleanText = cleanJsonString(response.text);
+        
+        try {
+          const data = JSON.parse(cleanText) as LessonSummaryResponse;
+          
+          if (!data.title && !data.keyConcepts) {
+            throw new Error("Incomplete data received");
+          }
+          
+          return data;
+        } catch (parseError) {
+          console.error("JSON Parse Error:", parseError);
+          // Force retry if JSON is malformed
+          throw parseError; 
+        }
       }
-    });
-
-    if (response.text) {
-      let cleanText = response.text.trim();
       
-      // Robust cleaning: remove markdown blocks
-      cleanText = cleanText.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+      throw new Error("Empty response from AI");
 
-      // Extra Safety: Extract JSON object boundaries if surrounding text exists
-      const firstBrace = cleanText.indexOf('{');
-      const lastBrace = cleanText.lastIndexOf('}');
+    } catch (error) {
+      console.error(`Gemini Attempt ${attempt + 1} Failed:`, error);
+      attempt++;
       
-      if (firstBrace !== -1 && lastBrace !== -1) {
-        cleanText = cleanText.substring(firstBrace, lastBrace + 1);
+      if (attempt > maxRetries) {
+        return null;
       }
-
-      return JSON.parse(cleanText) as LessonSummaryResponse;
+      // Exponential backoff
+      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
     }
-    return null;
-  } catch (error) {
-    console.error("Gemini Error:", error);
-    return null;
   }
+
+  return null;
 };

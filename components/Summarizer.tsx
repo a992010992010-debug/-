@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { generateLessonSummary } from '../services/geminiService';
 import { LessonSummaryResponse } from '../types';
-import { BrainCircuit, Book, GraduationCap, School, Loader2, Sparkles, Copy, Check, Lightbulb, BookOpen, Share2, MessageCircle, CalendarPlus, Settings2, AlignLeft, ListOrdered, Moon, Sun, Palette, Type, X } from 'lucide-react';
+import { BrainCircuit, Book, GraduationCap, School, Loader2, Sparkles, Copy, Check, Lightbulb, BookOpen, Share2, MessageCircle, CalendarPlus, Settings2, AlignLeft, ListOrdered, Moon, Sun, Palette, Type, X, AlertCircle, Image as ImageIcon, UploadCloud, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import ReactMarkdown from 'react-markdown';
 
 interface SummarizerProps {
   onSchedule: (data: { topic: string; notes: string }) => void;
@@ -10,15 +11,22 @@ interface SummarizerProps {
 
 type ColorPalette = 'indigo' | 'rose' | 'emerald' | 'sky' | 'amber';
 type FontSize = 'small' | 'medium' | 'large';
+type InputMode = 'text' | 'image';
 
 const Summarizer: React.FC<SummarizerProps> = ({ onSchedule }) => {
+  const [inputMode, setInputMode] = useState<InputMode>('text');
+  
   const [lessonName, setLessonName] = useState('');
   const [subject, setSubject] = useState('');
   const [gradeLevel, setGradeLevel] = useState('');
   
+  // Image State
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  
   // Options
   const [summaryLength, setSummaryLength] = useState<'short' | 'medium' | 'long'>('medium');
   const [conceptsCount, setConceptsCount] = useState<number>(3);
+  const [includeGlossary, setIncludeGlossary] = useState<boolean>(true);
   
   // Display Settings
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -32,6 +40,7 @@ const Summarizer: React.FC<SummarizerProps> = ({ onSchedule }) => {
 
   // Ref for scrolling
   const resultRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (result && resultRef.current) {
@@ -41,25 +50,68 @@ const Summarizer: React.FC<SummarizerProps> = ({ onSchedule }) => {
     }
   }, [result]);
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error('حجم الصورة كبير جداً (الحد الأقصى 5 ميجابايت)');
+        return;
+      }
+      
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSummarize = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!lessonName || !subject || !gradeLevel) {
-      toast.error('يرجى تعبئة جميع الحقول الأساسية');
+    
+    // Validation
+    if (!subject || !gradeLevel) {
+      toast.error('يرجى تحديد المادة والصف الدراسي');
+      return;
+    }
+
+    if (inputMode === 'text' && !lessonName) {
+      toast.error('يرجى كتابة عنوان الدرس');
+      return;
+    }
+
+    if (inputMode === 'image' && !selectedImage) {
+      toast.error('يرجى رفع صورة الدرس');
       return;
     }
 
     setLoading(true);
     setResult(null);
-    setShowDisplaySettings(false); // Hide settings on new search
+    setShowDisplaySettings(false); 
     
-    const summary = await generateLessonSummary(lessonName, subject, gradeLevel, summaryLength, conceptsCount);
-    
-    if (summary) {
-        setResult(summary);
-    } else {
-        toast.error('حدث خطأ أثناء التلخيص، حاول مرة أخرى');
+    try {
+        const summary = await generateLessonSummary(
+          inputMode === 'image' ? 'درس مصور' : lessonName, // Use generic name if image, or user input
+          subject, 
+          gradeLevel, 
+          summaryLength, 
+          conceptsCount, 
+          includeGlossary,
+          inputMode === 'image' && selectedImage ? selectedImage : undefined
+        );
+        
+        if (summary) {
+            setResult(summary);
+            toast.success('تم التلخيص بنجاح!');
+        } else {
+            toast.error('لم نتمكن من تلخيص هذا الدرس حالياً. حاول مرة أخرى.');
+        }
+    } catch (e) {
+        console.error(e);
+        toast.error('حدث خطأ غير متوقع');
+    } finally {
+        setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleCopy = () => {
@@ -204,20 +256,8 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
             </h2>
             
             <form onSubmit={handleSummarize} className="space-y-4 md:space-y-5">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">عنوان الدرس</label>
-                <div className="relative group">
-                  <Book className="absolute right-3 top-3.5 text-gray-400 group-focus-within:text-indigo-500 transition-colors" size={18} />
-                  <input
-                    type="text"
-                    value={lessonName}
-                    onChange={(e) => setLessonName(e.target.value)}
-                    className="w-full pr-10 pl-4 py-3 rounded-xl glass-input focus:bg-white focus:border-indigo-500 outline-none transition-all shadow-sm"
-                    placeholder="مثال: الفاعل ونائب الفاعل"
-                  />
-                </div>
-              </div>
-
+              
+              {/* Common Fields */}
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-2">المادة</label>
                 <div className="relative group">
@@ -227,7 +267,7 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
                     value={subject}
                     onChange={(e) => setSubject(e.target.value)}
                     className="w-full pr-10 pl-4 py-3 rounded-xl glass-input focus:bg-white focus:border-indigo-500 outline-none transition-all shadow-sm"
-                    placeholder="مثال: لغة عربية"
+                    placeholder="مثال: رياضيات، فيزياء"
                   />
                 </div>
               </div>
@@ -245,6 +285,77 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
                   />
                 </div>
               </div>
+
+              {/* Input Mode Toggle */}
+              <div className="bg-gray-100 p-1 rounded-xl flex">
+                 <button
+                   type="button"
+                   onClick={() => setInputMode('text')}
+                   className={`flex-1 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${inputMode === 'text' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+                 >
+                   <Type size={16} />
+                   عنوان الدرس
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => setInputMode('image')}
+                   className={`flex-1 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${inputMode === 'image' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+                 >
+                   <ImageIcon size={16} />
+                   صورة الدرس
+                 </button>
+              </div>
+
+              {/* Dynamic Input based on Mode */}
+              {inputMode === 'text' ? (
+                 <div className="animate-enter">
+                    <label className="block text-sm font-bold text-gray-700 mb-2">عنوان الدرس</label>
+                    <div className="relative group">
+                      <Book className="absolute right-3 top-3.5 text-gray-400 group-focus-within:text-indigo-500 transition-colors" size={18} />
+                      <input
+                        type="text"
+                        value={lessonName}
+                        onChange={(e) => setLessonName(e.target.value)}
+                        className="w-full pr-10 pl-4 py-3 rounded-xl glass-input focus:bg-white focus:border-indigo-500 outline-none transition-all shadow-sm"
+                        placeholder="مثال: الفاعل ونائب الفاعل"
+                      />
+                    </div>
+                  </div>
+              ) : (
+                <div className="animate-enter">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">ارفع صورة الدرس (كتاب/سبورة)</label>
+                  {!selectedImage ? (
+                    <div 
+                      onClick={() => fileInputRef.current?.click()}
+                      className="border-2 border-dashed border-indigo-200 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-300 transition-all group"
+                    >
+                       <div className="bg-indigo-100 p-3 rounded-full mb-3 text-indigo-500 group-hover:scale-110 transition-transform">
+                          <UploadCloud size={24} />
+                       </div>
+                       <p className="text-sm font-bold text-gray-600">اضغط لرفع صورة</p>
+                       <p className="text-xs text-gray-400 mt-1">PNG, JPG حتى 5MB</p>
+                    </div>
+                  ) : (
+                    <div className="relative rounded-xl overflow-hidden border border-gray-200 group">
+                       <img src={selectedImage} alt="Preview" className="w-full h-40 object-cover" />
+                       <button 
+                         type="button"
+                         onClick={() => { setSelectedImage(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                         className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-md hover:bg-red-600"
+                       >
+                         <Trash2 size={16} />
+                       </button>
+                    </div>
+                  )}
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    className="hidden" 
+                    accept="image/*" 
+                    onChange={handleImageUpload}
+                  />
+                </div>
+              )}
 
               {/* Advanced Options Divider */}
               <div className="pt-2">
@@ -298,16 +409,39 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
                        <span>8</span>
                      </div>
                    </div>
+
+                   {/* Glossary Toggle */}
+                   <div className="flex items-center justify-between">
+                     <label className="text-xs font-bold text-gray-600 flex items-center gap-1 cursor-pointer" htmlFor="glossary-toggle">
+                       <BookOpen size={14} />
+                       تضمين المصطلحات (Glossary)
+                     </label>
+                     <div className="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                        <input 
+                          type="checkbox" 
+                          name="glossary-toggle" 
+                          id="glossary-toggle" 
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 right-5 checked:border-indigo-600"
+                          checked={includeGlossary}
+                          onChange={(e) => setIncludeGlossary(e.target.checked)}
+                          style={{ right: includeGlossary ? '0' : 'auto', left: includeGlossary ? 'auto' : '0' }}
+                        />
+                        <div 
+                          onClick={() => setIncludeGlossary(!includeGlossary)}
+                          className={`toggle-label block overflow-hidden h-5 rounded-full cursor-pointer ${includeGlossary ? 'bg-indigo-600' : 'bg-gray-300'}`}
+                        ></div>
+                     </div>
+                   </div>
                 </div>
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-4 mt-4 rounded-xl text-white font-bold text-lg shadow-lg shadow-indigo-500/30 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 transition-all transform hover:-translate-y-1 active:translate-y-0 flex items-center justify-center gap-3"
+                className="w-full py-4 mt-4 rounded-xl text-white font-bold text-lg shadow-lg shadow-indigo-500/30 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 transition-all transform hover:-translate-y-1 active:translate-y-0 flex items-center justify-center gap-3 disabled:opacity-70 disabled:cursor-not-allowed"
               >
                 {loading ? <Loader2 className="animate-spin" /> : <Sparkles size={20} className="text-yellow-300 fill-current"/>}
-                {loading ? 'جاري التحليل...' : 'شرح الدرس'}
+                {loading ? 'جاري التحليل (قد يستغرق دقيقة)...' : 'شرح الدرس'}
               </button>
             </form>
           </div>
@@ -453,8 +587,19 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
                                         </div>
                                         
                                         {/* Explanation Box */}
-                                        <div className={`bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/10 text-indigo-50 font-medium leading-relaxed ${getFontSizeClasses('body')}`}>
-                                            {item.explanation}
+                                        <div className={`bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/10 text-indigo-50 font-medium leading-relaxed ${getFontSizeClasses('body')} dir-rtl`}>
+                                           <ReactMarkdown
+                                             components={{
+                                                p: ({children}) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
+                                                ul: ({children}) => <ul className="list-disc list-outside mr-5 space-y-1 mb-3">{children}</ul>,
+                                                li: ({children}) => <li className="pl-1 text-white/95">{children}</li>,
+                                                strong: ({children}) => <span className="font-black bg-white/20 px-1 rounded mx-0.5 inline-block text-white border border-white/20">{children}</span>,
+                                                h3: ({children}) => <h3 className="font-bold text-lg mb-2 mt-4 text-white underline decoration-white/30 decoration-2 underline-offset-4">{children}</h3>,
+                                                blockquote: ({children}) => <blockquote className="bg-black/20 border-r-4 border-yellow-400 pr-3 py-2 rounded-l-lg my-3 text-white italic">{children}</blockquote>
+                                             }}
+                                           >
+                                              {item.explanation || ''}
+                                           </ReactMarkdown>
                                         </div>
                                     </div>
                                 </div>
@@ -466,7 +611,7 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
 
               {/* Terminology Grid */}
               {result.terminology && result.terminology.length > 0 && (
-                <div className="mb-8 md:mb-10">
+                <div className="mb-8 md:mb-10 animate-enter">
                   <h4 className={`${getFontSizeClasses('heading')} mb-4 md:mb-5 flex items-center gap-2 ${theme === 'light' ? 'text-gray-800' : 'text-white'}`}>
                       <span className="bg-gray-600 text-white p-1.5 rounded-lg"><BookOpen size={fontSize === 'small' ? 16 : 20} /></span>
                       مصطلحات هامة
@@ -560,8 +705,14 @@ ${terms.map(t => `- ${t.term}: ${t.definition}`).join('\n')}
               </div>
               <h3 className="text-xl md:text-2xl font-bold text-gray-800 mb-2">مساعدك الذكي جاهز</h3>
               <p className="text-gray-600 max-w-md mx-auto leading-relaxed text-sm md:text-base">
-                أدخل تفاصيل الدرس في القائمة الجانبية وسيقوم الذكاء الاصطناعي بتوليد شرح مبسط، مفاهيم رئيسية، ومصطلحات هامة بتصميم رائع.
+                أدخل تفاصيل الدرس أو ارفع صورة الكتاب وسيقوم الذكاء الاصطناعي بتوليد شرح مبسط، مفاهيم رئيسية، ومصطلحات هامة بتصميم رائع.
               </p>
+              {loading && (
+                <div className="mt-8 flex items-center gap-2 text-indigo-600 font-bold animate-pulse">
+                    <Loader2 className="animate-spin" />
+                    جاري إعداد الملخص، يرجى الانتظار...
+                </div>
+              )}
             </div>
           )}
         </div>
